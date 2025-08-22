@@ -126,6 +126,7 @@ google-pasta==0.2.0
 greenlet @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_3fdrsxa1og/croot/greenlet_1733860082149/work
 grpcio==1.74.0
 gunicorn==23.0.0
+gradio
 h11 @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_557zp2ij9k/croot/h11_1748442489221/work
 h5py @ file:///Users/builder/cbouss/buildout/croot/h5py_1739486040846/work
 HeapDict @ file:///Users/ktietz/demo/mc3/conda-bld/heapdict_1630598515714/work
@@ -439,3 +440,4 @@ zict @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/zict_1728
 zipp @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_echurpkwug/croot/zipp_1732630743967/work
 zope.interface @ file:///Users/builder/cbouss/buildout/croot/zope.interface_1735845126058/work
 zstandard @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_a5_i6g4o6n/croot/zstandard_1731356352787/work
+gunicorn
