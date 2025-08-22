@@ -20,3 +20,6 @@ EXPOSE 8000
 CMD ["python", "main.py"]
 # Use gunicorn for production
 # CMD ["gunicorn", "main:app", "--bind", "0.0.
+# Run with gunicorn
+CMD ["gunicorn", "main:app", "--bind", "0.0.0.0:8000"]
+
