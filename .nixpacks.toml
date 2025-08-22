@@ -1,0 +1,8 @@
+[start]
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+
+[variables]
+PYTHONUNBUFFERED = "1"
+PYTHONUTF8 = "1"
+LC_ALL = "C.UTF-8"
+LANG = "C.UTF-8"

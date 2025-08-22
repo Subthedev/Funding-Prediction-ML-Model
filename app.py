@@ -1,161 +1,133 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import Any, Dict, Tuple
 
-from flask import Flask, render_template, jsonify, redirect, url_for
-import pandas as pd
-import joblib
+from flask import Flask, jsonify, render_template, redirect, url_for
 
-from src.config import Paths, DEFAULT_COIN, DEFAULT_INTERVAL
-from src.hyperliquid_api import get_current_funding_for_coin, get_predicted_funding_for_coin
-from src.features import build_features
-from src.fetch_data import merge_on_hour, funding_df, candles_df
+from src.config import Paths, DEFAULT_COIN
 from src.utils import ensure_dir, now_ms, days_ago_ms, floor_hour_ms
-from src.hyperliquid_api import fetch_funding_history, fetch_candles
+from src.hyperliquid_api import (
+    get_current_funding_for_coin,
+    get_predicted_funding_for_coin,
+    fetch_funding_history,
+)
+from src.fetch_data import funding_df
+import pandas as pd
+
+try:
+    import joblib  # type: ignore
+except Exception:  # pragma: no cover
+    joblib = None  # type: ignore
+
+try:
+    from src.features import build_features  # type: ignore
+except Exception:
+    build_features = None  # type: ignore
 
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates")
 paths = Paths()
 ensure_dir(paths.data_dir)
 ensure_dir(paths.models_dir)
 
 
-def load_cls_model():
-    payload = joblib.load(paths.cls_model_file)
-    return payload["models"], payload["feature_cols"]
+def _safe_load(payload_path: str) -> Tuple[list[Any], list[str]]:
+    if joblib is None:
+        return [], []
+    if not os.path.exists(payload_path):
+        return [], []
+    try:
+        payload = joblib.load(payload_path)
+        models = payload.get("models", [])
+        feature_cols = payload.get("feature_cols", [])
+        return models, feature_cols
+    except Exception:
+        return [], []
 
 
-def load_reg_model():
-    payload = joblib.load(paths.model_file)
-    return payload["models"], payload["feature_cols"]
+def _load_cls_model() -> Tuple[list[Any], list[str]]:
+    return _safe_load(paths.cls_model_file)
 
 
-def latest_dataset(days: int = 7) -> pd.DataFrame:
+def _load_reg_model() -> Tuple[list[Any], list[str]]:
+    return _safe_load(paths.model_file)
+
+
+def _latest_dataset(days: int = 14) -> pd.DataFrame:
     end = now_ms()
     start = days_ago_ms(days)
-    fundings = fetch_funding_history(DEFAULT_COIN, start, end)
-    candles = fetch_candles(DEFAULT_COIN, DEFAULT_INTERVAL, start, end)
-    fdf = funding_df(fundings)
-    cdf = candles_df(candles)
-    merged = merge_on_hour(fdf, cdf)
-    return merged
-
-
-def predict_direction() -> Dict[str, Any]:
-    models, feature_cols = load_cls_model()
-    df = latest_dataset(14)
-    df_feat = build_features(df).dropna().reset_index(drop=True)
-    if df_feat.empty:
-        return {"error": "Not enough data to predict"}
-    x_row = df_feat[feature_cols].astype(float).values[-1:]
-    import numpy as np
-    probas = np.array([m.predict_proba(x_row)[0, 1] for m in models])
-    p_mean = float(probas.mean())
-    direction = "positive" if p_mean >= 0.5 else "negative"
-    conf = p_mean if direction == "positive" else (1.0 - p_mean)
-    return {
-        "direction": direction,
-        "prob_positive": p_mean,
-        "confidence": conf,
-        "n_models": len(models),
-    }
-
-
-def predict_numeric() -> Dict[str, Any]:
-    models, feature_cols = load_reg_model()
-    df = latest_dataset(14)
-    df_feat = build_features(df).dropna().reset_index(drop=True)
-    if df_feat.empty:
-        return {"error": "Not enough data"}
-    x_row = df_feat[feature_cols].astype(float).values[-1:]
-    import numpy as np
-    preds = np.array([m.predict(x_row)[0] for m in models])
-    return {"pred_next_funding": float(preds.mean()), "pred_std": float(preds.std()), "n_models": len(models)}
-
-
-def append_prediction_to_log(direction: str, prob_positive: float) -> None:
-    ts = datetime.now(timezone.utc).isoformat()
-    row = {
-        "time": ts,
-        "direction": direction,
-        "prob_positive": prob_positive,
-    }
-    if os.path.exists(paths.predictions_log):
-        df = pd.read_csv(paths.predictions_log)
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    else:
-        df = pd.DataFrame([row])
-    df.to_csv(paths.predictions_log, index=False)
-
-
-def realized_direction_after(ts_iso: str) -> str | None:
     try:
-        ts = datetime.fromisoformat(ts_iso)
+        fundings = fetch_funding_history(DEFAULT_COIN, start, end)
+        fdf = funding_df(fundings)
+        return fdf
     except Exception:
-        return None
-    start = int(ts.timestamp() * 1000)
-    end = now_ms()
-    fundings = fetch_funding_history(DEFAULT_COIN, start, end)
-    fdf = funding_df(fundings)
-    if fdf.empty:
-        return None
-    next_events = fdf[fdf["time"] > start]
-    if next_events.empty:
-        return None
-    rate = float(next_events.iloc[0]["fundingRate"])
-    return "positive" if rate > 0 else "negative"
+        return pd.DataFrame()
 
 
-def compute_actual_direction() -> Dict[str, Any]:
-    if not os.path.exists(paths.predictions_log):
-        return {"message": "No predictions yet"}
-    logs = pd.read_csv(paths.predictions_log)
-    if logs.empty:
-        return {"message": "No predictions yet"}
-    latest = logs.iloc[-1]
-    realized = realized_direction_after(str(latest["time"]))
-    if realized is None:
-        return {"message": "Awaiting realized funding"}
-    correct = str(realized == latest["direction"]).lower()
-    return {
-        "last_prediction_time": latest["time"],
-        "predicted_direction": latest["direction"],
-        "prob_positive": float(latest.get("prob_positive", 0.0)),
-        "realized_direction": realized,
-        "correct": correct,
-    }
+def _features_from_funding(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    if build_features is None:
+        # Minimal fallback features: use simple rolling stats on funding
+        out = pd.DataFrame({
+            "hour": df["time"],
+            "fundingRate": df.get("fundingRate", 0),
+            "premium": df.get("premium", 0),
+        }).dropna()
+        for w in (3, 6, 12, 24):
+            out[f"fundingRate_ema_{w}"] = out["fundingRate"].ewm(span=w, adjust=False).mean()
+        out = out.dropna()
+        return out.reset_index(drop=True)
+    try:
+        return build_features(pd.DataFrame({
+            "hour": df["time"],
+            "fundingRate": df.get("fundingRate", 0),
+            "premium": df.get("premium", 0),
+            "c": pd.Series(dtype=float),
+            "v": pd.Series(dtype=float),
+        })).dropna().reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
-def compute_accuracy(max_days: int = 14) -> Dict[str, Any]:
-    if not os.path.exists(paths.predictions_log):
-        return {"count": 0, "correct": 0, "accuracy": None}
-    logs = pd.read_csv(paths.predictions_log)
-    if logs.empty:
-        return {"count": 0, "correct": 0, "accuracy": None}
-    cutoff_ms = days_ago_ms(max_days)
-    logs["time_ms"] = pd.to_datetime(logs["time"]).astype("int64") // 10**6
-    logs = logs[logs["time_ms"] >= cutoff_ms].reset_index(drop=True)
-    if logs.empty:
-        return {"count": 0, "correct": 0, "accuracy": None}
-    correct = 0
-    total = 0
-    for _, row in logs.iterrows():
-        realized = realized_direction_after(str(row["time"]))
-        if realized is None:
-            continue
-        total += 1
-        if realized == str(row["direction"]):
-            correct += 1
-    acc = (correct / total) if total > 0 else None
-    return {"count": total, "correct": correct, "accuracy": acc}
+def _predict_direction() -> Dict[str, Any]:
+    models, feature_cols = _load_cls_model()
+    df = _latest_dataset(14)
+    feat = _features_from_funding(df)
+    if feat.empty or not feature_cols or not models:
+        # Conservative neutral fallback
+        return {"direction": "wait", "prob_positive": 0.5, "confidence": 0.5, "n_models": len(models)}
+    x = feat[feature_cols].astype(float).values[-1:]
+    import numpy as np
+    try:
+        probas = np.array([m.predict_proba(x)[0, 1] for m in models])
+        p = float(probas.mean())
+        direction = "positive" if p >= 0.5 else "negative"
+        conf = p if direction == "positive" else (1.0 - p)
+        return {"direction": direction, "prob_positive": p, "confidence": conf, "n_models": len(models)}
+    except Exception:
+        return {"direction": "wait", "prob_positive": 0.5, "confidence": 0.5, "n_models": len(models)}
+
+
+def _predict_numeric() -> Dict[str, Any]:
+    models, feature_cols = _load_reg_model()
+    df = _latest_dataset(14)
+    feat = _features_from_funding(df)
+    if feat.empty or not feature_cols or not models:
+        return {"pred_next_funding": 0.0, "pred_std": 0.0, "n_models": len(models)}
+    x = feat[feature_cols].astype(float).values[-1:]
+    import numpy as np
+    try:
+        preds = np.array([m.predict(x)[0] for m in models])
+        return {"pred_next_funding": float(preds.mean()), "pred_std": float(preds.std()), "n_models": len(models)}
+    except Exception:
+        return {"pred_next_funding": 0.0, "pred_std": 0.0, "n_models": len(models)}
 
 
 @app.route("/")
-def index():
-    # Always serve the React dashboard
-    return redirect(url_for('dashboard'))
+def root():
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/dashboard")
@@ -163,81 +135,40 @@ def dashboard():
     return render_template("dashboard.html")
 
 
-@app.route("/api/status")
-def api_status():
-    hl_current = get_current_funding_for_coin(DEFAULT_COIN) or {}
-    hl_pred = get_predicted_funding_for_coin(DEFAULT_COIN) or {}
-    pred = predict_direction()
-    return jsonify({
-        "hl_current": hl_current,
-        "hl_pred": hl_pred,
-        "prediction": pred,
-    })
-
-
 @app.route("/api/summary")
 def api_summary():
-    hl_current = get_current_funding_for_coin(DEFAULT_COIN) or {}
-    hl_pred = get_predicted_funding_for_coin(DEFAULT_COIN) or {}
-    cls = predict_direction()
-    reg = predict_numeric()
-    cmp_res = compute_actual_direction()
-    acc = compute_accuracy()
+    try:
+        hl_current = get_current_funding_for_coin(DEFAULT_COIN) or {}
+    except Exception:
+        hl_current = {}
+    try:
+        hl_pred = get_predicted_funding_for_coin(DEFAULT_COIN) or {}
+    except Exception:
+        hl_pred = {}
+    cls = _predict_direction()
+    reg = _predict_numeric()
 
-    # Robust next funding time (ms)
     now = now_ms()
-    raw_next = None
-    if isinstance(hl_pred, dict):
-        raw_next = hl_pred.get("nextFundingTime")
-    effective_next = raw_next if isinstance(raw_next, (int, float)) else None
-    if effective_next is None:
-        effective_next = floor_hour_ms(now) + 60 * 60 * 1000
+    raw_next = hl_pred.get("nextFundingTime") if isinstance(hl_pred, dict) else None
+    next_ms = raw_next if isinstance(raw_next, (int, float)) else None
+    if next_ms is None:
+        next_ms = floor_hour_ms(now) + 60 * 60 * 1000
     else:
-        # If stale (in the past), roll forward to the next hour boundary
-        if effective_next < now - 5 * 60 * 1000:
-            hours_behind = int((now - effective_next) // (60 * 60 * 1000)) + 1
-            effective_next = effective_next + hours_behind * 60 * 60 * 1000
-        # If way in the future (rare), clamp to next hour
-        if effective_next > now + 3 * 60 * 60 * 1000:
-            effective_next = floor_hour_ms(now) + 60 * 60 * 1000
+        if next_ms < now - 5 * 60 * 1000:
+            hours_behind = int((now - next_ms) // (60 * 60 * 1000)) + 1
+            next_ms = next_ms + hours_behind * 60 * 60 * 1000
+        if next_ms > now + 3 * 60 * 60 * 1000:
+            next_ms = floor_hour_ms(now) + 60 * 60 * 1000
 
     return jsonify({
         "predictedFundingRate": reg,
         "predictedDirection": cls,
         "liveFunding": hl_current,
-        "nextFundingTime": int(effective_next),
-        "lastComparison": cmp_res,
-        "accuracy": acc,
+        "nextFundingTime": int(next_ms),
         "coin": DEFAULT_COIN,
         "serverTime": int(now),
         "fundingIntervalSeconds": 3600,
     })
-
-
-@app.route("/api/history")
-def api_history():
-    # Return recent funding history and predictions log for charting
-    end = now_ms()
-    start = days_ago_ms(3)
-    fundings = fetch_funding_history(DEFAULT_COIN, start, end)
-    fdf = funding_df(fundings)
-    hist = [
-        {"time": int(row["time"]), "fundingRate": float(row["fundingRate"]) if pd.notna(row["fundingRate"]) else None}
-        for _, row in fdf.tail(500).iterrows()
-    ]
-    preds = []
-    if os.path.exists(paths.predictions_log):
-        logs = pd.read_csv(paths.predictions_log)
-        for _, row in logs.tail(200).iterrows():
-            realized = realized_direction_after(str(row["time"]))
-            preds.append({
-                "time": str(row["time"]),
-                "direction": str(row["direction"]),
-                "prob_positive": float(row.get("prob_positive", 0.0)),
-                "realized": realized,
-                "correct": realized == str(row["direction"]),
-            })
-    return jsonify({"fundingHistory": hist, "predictionsLog": preds})
 
 
 @app.route("/health")
@@ -245,26 +176,7 @@ def health():
     return jsonify({"status": "ok"})
 
 
-def _find_free_port(preferred: int = 8000, max_tries: int = 20) -> int:
-    import socket
-    port = preferred
-    for _ in range(max_tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.2)
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                port += 1
-    return preferred
-
-
 if __name__ == "__main__":
-    host = os.getenv("HOST", "127.0.0.1")
-    try:
-        base_port = int(os.getenv("PORT", "8000"))
-    except ValueError:
-        base_port = 8000
-    port = _find_free_port(base_port)
-    print(f"Starting server on http://{host}:{port}")
-    app.run(host=host, port=port, debug=True, use_reloader=False, threaded=True) 
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "7860"))
+    app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True) 
