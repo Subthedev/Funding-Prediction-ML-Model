@@ -1,0 +1,9 @@
+[tool.basedpyright]
+include = ["src"]
+pythonVersion = "3.11"
+venvPath = "."
+venv = ".uvenv"
+typeCheckingMode = "basic"
+reportMissingImports = "none"
+reportMissingTypeStubs = "none"
+useLibraryCodeForTypes = true 
