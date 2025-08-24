@@ -7,7 +7,10 @@ from typing import List, Dict, Any
 from flask import Flask, render_template, jsonify, redirect, url_for
 import pandas as pd
 import joblib
-import gradio as gr
+try:
+    import gradio as gr  # type: ignore
+except Exception:
+    gr = None  # type: ignore
 
 from src.config import Paths, DEFAULT_COIN, DEFAULT_INTERVAL
 from src.hyperliquid_api import get_current_funding_for_coin, get_predicted_funding_for_coin
@@ -263,7 +266,10 @@ def _find_free_port(preferred: int = 8000, max_tries: int = 20) -> int:
 def greet(name):
     return f"Hello {name}, welcome to IgniteX 🚀!"
 
-demo = gr.Interface(fn=greet, inputs="text", outputs="text")
+if gr is not None:
+    demo = gr.Interface(fn=greet, inputs="text", outputs="text")
+else:
+    demo = None  # type: ignore
 
 # Remove the following block for deployment:
 # if __name__ == "__main__":
@@ -280,5 +286,6 @@ demo = gr.Interface(fn=greet, inputs="text", outputs="text")
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
-    # Launch Gradio app if running directly (for Hugging Face Spaces)
-    demo.launch()
+    # Launch Gradio app if available
+    if demo is not None:
+        demo.launch()
