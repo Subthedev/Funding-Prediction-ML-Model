@@ -2,9 +2,7 @@ Flask==3.0.2
 gunicorn==21.2.0
 requests==2.31.0
 
-# Core scientific stack
+# Core scientific stack (binary wheels only)
 numpy==1.26.4
 pandas==2.1.4
-scipy==1.11.4
-scikit-learn==1.5.2
 joblib==1.4.2
