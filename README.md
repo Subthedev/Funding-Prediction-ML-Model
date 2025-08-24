@@ -1,37 +1,122 @@
 # HYPE Funding Rate Prediction
 
-Predict next funding direction for HYPE on Hyperliquid and expose an actionable dashboard.
+ML model to predict the next hourly funding rate direction for HYPE token on Hyperliquid.
 
-## Local quickstart
+## Quick Start
 
+### Local Development
+
+1. **Setup Environment**:
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python app.py  # opens on http://127.0.0.1:7860 (or printed PORT)
+# Install uv (fast Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment with Python 3.11
+uv venv .uvenv --python 3.11
+source .uvenv/bin/activate  # On Windows: .uvenv\Scripts\activate
+
+# Install dependencies
+uv pip install -r requirements.txt
 ```
 
-## Deploy to Hugging Face Spaces (Flask)
+2. **Fetch Initial Data**:
+```bash
+python src/fetch_data.py --coin HYPE --days 30
+```
 
-Option A — Manual upload
-1. Create a new Space (type: "Other"/Blank).
-2. Upload `app.py`, `requirements.txt`, `Procfile`, `templates/`, and the `src/` folder (and any trained models under `models/`).
-3. Spaces picks up `Procfile` automatically (entrypoint: `gunicorn app:app`).
+3. **Train Models**:
+```bash
+python src/train_cls.py  # Classification model (direction prediction)
+python src/train.py      # Regression model (exact rate prediction)
+```
 
-Option B — GitHub Actions (auto-deploy)
-1. Create a Space on Hugging Face and copy its Space ID, e.g. `username/hype-funding-dashboard`.
-2. In your GitHub repo, add Secrets:
-   - `HF_TOKEN`: a User Access Token with write access.
-   - `HF_SPACE_ID`: the Space ID string, e.g. `username/hype-funding-dashboard`.
-3. The workflow `.github/workflows/hf-deploy.yml` uploads the app on pushes to `main` or `feature/hf-space`.
+4. **Run Web Dashboard**:
+```bash
+python app.py
+```
 
-## API
+Visit `http://localhost:8000/dashboard` for the interactive UI.
 
-- `GET /api/summary` → JSON containing:
-  - `predictedFundingRate` { `pred_next_funding`, `pred_std`, `n_models` }
-  - `predictedDirection` { `direction`, `prob_positive`, `confidence`, `n_models` }
-  - `liveFunding` { `funding`, `premium`, `markPx`, `oraclePx`, `openInterest` }
-  - `nextFundingTime` (ms), `serverTime` (ms)
+## Deployment
 
-## UI
+### Deploy to Render (Recommended)
 
-- Visit `/dashboard` for the actionable minimal UI with countdown and suggestions. 
+1. **Fork and Connect Repository**:
+   - Fork this repository to your GitHub
+   - Sign up at [render.com](https://render.com)
+   - Connect your GitHub account
+
+2. **Create Web Service**:
+   - Click "New +" → "Web Service"
+   - Connect your forked repository
+   - Choose branch: `main` or `feature/render-deploy`
+
+3. **Configuration** (Auto-detected from `render.yaml`):
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `gunicorn app:app --timeout 120 --workers 1 --threads 2 --bind 0.0.0.0:$PORT`
+   - **Python Version**: 3.11.4
+
+4. **Deploy**:
+   - Click "Create Web Service"
+   - Wait for build and deployment (~3-5 minutes)
+   - Access your app at: `https://your-app-name.onrender.com/dashboard`
+
+### Deploy to Hugging Face Spaces
+
+1. **Automated Deployment (GitHub Actions)**:
+   - Add repository secrets:
+     - `HF_TOKEN`: Your Hugging Face write token
+     - `HF_SPACE_ID`: Your Space ID (e.g., `username/hype-funding-dashboard`)
+   - Push to `main` branch to trigger auto-deployment
+
+2. **Manual Deployment**:
+   - Create a new Space on Hugging Face (Type: Gradio)
+   - Upload: `app.py`, `requirements.txt`, `Procfile`, `templates/`, `src/`
+   - The app will start automatically
+
+## Features
+
+- **Real-time Predictions**: Next hourly funding rate direction (Long/Short/Wait)
+- **Live Data**: Current funding rate with countdown timer
+- **Performance Tracking**: Model accuracy and prediction history
+- **Interactive Dashboard**: Clean, actionable UI with real-time updates
+- **Hyperliquid Integration**: Live market data and predicted funding rates
+
+## API Endpoints
+
+- `GET /dashboard` - Interactive web dashboard
+- `GET /api/summary` - JSON data for predictions, live rates, and accuracy
+- `GET /health` - Health check endpoint
+
+## Project Structure
+
+```
+src/
+├── config.py           # Configuration and constants
+├── hyperliquid_api.py  # Hyperliquid API client
+├── fetch_data.py       # Data fetching and preprocessing
+├── features.py         # Feature engineering
+├── train_cls.py        # Classification model training
+├── train.py            # Regression model training
+├── infer_cls.py        # Classification inference
+├── infer.py            # Regression inference
+└── live_loop.py        # Live prediction pipeline
+
+templates/
+└── dashboard.html      # React-based web dashboard
+
+app.py                  # Flask web application
+requirements.txt        # Python dependencies
+render.yaml            # Render deployment config
+```
+
+## Model Details
+
+- **Classification Model**: HistGradientBoostingClassifier with probability calibration
+- **Features**: Price action, volatility, RSI, funding rate history, time-based features
+- **Target**: Binary classification (positive/negative funding rate)
+- **Evaluation**: Time-series cross-validation with accuracy tracking
+
+## License
+
+MIT License 
