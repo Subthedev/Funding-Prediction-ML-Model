@@ -2,12 +2,12 @@ services:
   - type: web
     name: hype-funding-dashboard
     env: python
+    pythonVersion: 3.11.13
     plan: free
     buildCommand: pip install --upgrade pip setuptools wheel && pip install --only-binary=:all: --prefer-binary --no-cache-dir -r requirements.txt
     startCommand: gunicorn app:app --timeout 120 --workers 1 --threads 2 --bind 0.0.0.0:$PORT
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.4
+
       - key: HOST
         value: 0.0.0.0
       - key: PIP_NO_CACHE_DIR
