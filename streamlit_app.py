@@ -2,9 +2,26 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
+import os
+import sys
+import joblib
 from datetime import datetime, timezone
 import requests
 import plotly.graph_objects as go
+
+# Add src to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+try:
+    from src.hyperliquid_api import get_current_funding_for_coin, get_predicted_funding_for_coin
+    from src.features import build_features
+    from src.config import Paths
+except ImportError:
+    # Fallback if src imports fail
+    get_current_funding_for_coin = None
+    get_predicted_funding_for_coin = None
+    build_features = None
+    Paths = None
 
 # Page config
 st.set_page_config(
@@ -49,9 +66,59 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def get_live_funding_data(coin="HYPE"):
+    """Fetch live funding data from Hyperliquid"""
+    try:
+        if get_current_funding_for_coin:
+            return get_current_funding_for_coin(coin)
+    except Exception as e:
+        st.error(f"Error fetching live data: {e}")
+    return None
+
+def get_live_predictions(coin="HYPE"):
+    """Get live ML predictions"""
+    try:
+        if not Paths:
+            return None
+            
+        paths = Paths()
+        model_file = paths.cls_model_file
+        merged_csv = paths.merged_csv
+        
+        if not os.path.exists(model_file) or not os.path.exists(merged_csv):
+            return None
+            
+        # Load model
+        payload = joblib.load(model_file)
+        models = payload["models"]
+        feature_cols = payload["feature_cols"]
+        
+        # Load and process data
+        df = pd.read_csv(merged_csv)
+        if build_features:
+            df_feat = build_features(df)
+            df_ready = df_feat.copy().dropna().reset_index(drop=True)
+            
+            if not df_ready.empty:
+                x_row = df_ready[feature_cols].astype(float).values[-1:]
+                probas = np.array([m.predict_proba(x_row)[0, 1] for m in models])
+                p_mean = float(np.mean(probas))
+                direction = "positive" if p_mean >= 0.5 else "negative"
+                confidence = p_mean if direction == "positive" else (1.0 - p_mean)
+                
+                return {
+                    "direction": direction,
+                    "prob_positive": p_mean,
+                    "confidence": confidence,
+                    "n_models": len(models)
+                }
+    except Exception as e:
+        st.error(f"Error getting predictions: {e}")
+    return None
+
 @st.cache_data(ttl=60)
 def get_mock_data():
-    """Generate mock data"""
+    """Generate mock data as fallback"""
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     return {
         "predictedDirection": {
@@ -74,13 +141,44 @@ def get_mock_data():
     }
 
 def fetch_api_data():
-    """Fetch data with fallback"""
-    try:
-        response = requests.get("http://localhost:8000/api/summary", timeout=2)
-        if response.status_code == 200:
-            return response.json(), False
-    except:
-        pass
+    """Fetch live data with fallbacks"""
+    # Try to get live data
+    live_funding = get_live_funding_data()
+    live_predictions = get_live_predictions()
+    
+    if live_funding or live_predictions:
+        # Calculate next funding time (hourly on Hyperliquid)
+        now = datetime.now(timezone.utc)
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + pd.Timedelta(hours=1)
+        next_funding_ms = int(next_hour.timestamp() * 1000)
+        
+        data = {
+            "coin": "HYPE",
+            "nextFundingTime": next_funding_ms,
+            "serverTime": int(now.timestamp() * 1000)
+        }
+        
+        if live_predictions:
+            data["predictedDirection"] = live_predictions
+        else:
+            data["predictedDirection"] = {
+                "direction": "unknown",
+                "prob_positive": 0.5,
+                "confidence": 0.5,
+                "n_models": 0
+            }
+            
+        if live_funding:
+            data["liveFunding"] = live_funding
+        else:
+            data["liveFunding"] = {"funding": 0, "markPx": 0}
+            
+        # Mock accuracy for now
+        data["accuracy"] = {"count": 0, "correct": 0, "accuracy": 0}
+        
+        return data, False
+    
+    # Fallback to mock data
     return get_mock_data(), True
 
 def format_number(value, decimals=6):
@@ -112,15 +210,26 @@ def get_countdown_time(next_funding_ms, server_offset=0):
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
 @st.cache_data(ttl=300)
-def generate_chart_data():
-    """Generate sample chart data"""
+def get_funding_history():
+    """Get funding rate history"""
+    try:
+        if Paths:
+            paths = Paths()
+            if os.path.exists(paths.funding_csv):
+                df = pd.read_csv(paths.funding_csv)
+                if 'time' in df.columns and 'funding' in df.columns:
+                    df['timestamp'] = pd.to_datetime(df['time'], unit='ms')
+                    return df[['timestamp', 'funding']].tail(100)
+    except Exception:
+        pass
+    
+    # Fallback to mock data
     dates = pd.date_range(start='2024-01-01', periods=100, freq='H')
     funding_rates = np.random.normal(0.0001, 0.00005, 100)
     
     return pd.DataFrame({
         'timestamp': dates,
-        'funding_rate': funding_rates,
-        'cumulative': np.cumsum(funding_rates)
+        'funding': funding_rates
     })
 
 def main():
@@ -136,7 +245,9 @@ def main():
     data, is_mock = fetch_api_data()
     
     if is_mock:
-        st.info("🚧 Demo Mode: Using simulated data")
+        st.warning("🚧 Demo Mode: Using simulated data. Live ML models not available.")
+    else:
+        st.success("🔴 LIVE: Real-time data from Hyperliquid")
     
     # Main prediction section
     col1, col2 = st.columns([2, 1])
@@ -209,12 +320,12 @@ def main():
     # Chart section
     st.markdown("### 📈 Funding Rate History")
     
-    chart_data = generate_chart_data()
+    chart_data = get_funding_history()
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=chart_data['timestamp'],
-        y=chart_data['funding_rate'],
+        y=chart_data['funding'],
         mode='lines',
         name='Funding Rate',
         line=dict(color='#00ff9d', width=2)
