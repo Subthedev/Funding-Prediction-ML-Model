@@ -249,6 +249,47 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/live")
+def api_live():
+    """Real-time data endpoint for live updates"""
+    hl_current = get_current_funding_for_coin(DEFAULT_COIN) or {}
+    hl_pred = get_predicted_funding_for_coin(DEFAULT_COIN) or {}
+    
+    # Calculate next funding time
+    now = now_ms()
+    raw_next = hl_pred.get("nextFundingTime") if isinstance(hl_pred, dict) else None
+    effective_next = raw_next if isinstance(raw_next, (int, float)) else None
+    
+    if effective_next is None:
+        effective_next = floor_hour_ms(now) + 60 * 60 * 1000
+    else:
+        if effective_next < now - 5 * 60 * 1000:
+            hours_behind = int((now - effective_next) // (60 * 60 * 1000)) + 1
+            effective_next = effective_next + hours_behind * 60 * 60 * 1000
+        if effective_next > now + 3 * 60 * 60 * 1000:
+            effective_next = floor_hour_ms(now) + 60 * 60 * 1000
+    
+    return jsonify({
+        "liveFunding": hl_current,
+        "nextFundingTime": int(effective_next),
+        "serverTime": int(now),
+        "coin": DEFAULT_COIN
+    })
+
+
+@app.route("/api/metrics")
+def api_metrics():
+    """Performance metrics endpoint"""
+    acc = compute_accuracy()
+    cmp_res = compute_actual_direction()
+    
+    return jsonify({
+        "accuracy": acc,
+        "lastComparison": cmp_res,
+        "serverTime": int(now_ms())
+    })
+
+
 def _find_free_port(preferred: int = 8000, max_tries: int = 20) -> int:
     import socket
     port = preferred
@@ -286,6 +327,6 @@ else:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
-    # Launch Gradio app if available
-    if demo is not None:
-        demo.launch()
+    # Launch Gradio app if available (disabled for production)
+    # if demo is not None:
+    #     demo.launch()
