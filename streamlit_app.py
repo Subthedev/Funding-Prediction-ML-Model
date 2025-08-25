@@ -76,9 +76,10 @@ def get_live_funding_data(coin="HYPE"):
     return None
 
 def get_live_predictions(coin="HYPE"):
-    """Get live ML predictions"""
+    """Get live ML predictions with robust error handling"""
     try:
-        if not Paths:
+        # Skip ML predictions in cloud environment to avoid version conflicts
+        if os.environ.get('STREAMLIT_SHARING_MODE') or not Paths:
             return None
             
         paths = Paths()
@@ -88,10 +89,15 @@ def get_live_predictions(coin="HYPE"):
         if not os.path.exists(model_file) or not os.path.exists(merged_csv):
             return None
             
-        # Load model
-        payload = joblib.load(model_file)
-        models = payload["models"]
-        feature_cols = payload["feature_cols"]
+        # Try to load model with version compatibility check
+        try:
+            payload = joblib.load(model_file)
+            models = payload["models"]
+            feature_cols = payload["feature_cols"]
+        except (AttributeError, ImportError, ModuleNotFoundError) as e:
+            # Model was trained with different scikit-learn version
+            print(f"Model version incompatibility: {e}")
+            return None
         
         # Load and process data
         df = pd.read_csv(merged_csv)
@@ -100,20 +106,25 @@ def get_live_predictions(coin="HYPE"):
             df_ready = df_feat.copy().dropna().reset_index(drop=True)
             
             if not df_ready.empty:
-                x_row = df_ready[feature_cols].astype(float).values[-1:]
-                probas = np.array([m.predict_proba(x_row)[0, 1] for m in models])
-                p_mean = float(np.mean(probas))
-                direction = "positive" if p_mean >= 0.5 else "negative"
-                confidence = p_mean if direction == "positive" else (1.0 - p_mean)
-                
-                return {
-                    "direction": direction,
-                    "prob_positive": p_mean,
-                    "confidence": confidence,
-                    "n_models": len(models)
-                }
-    except Exception as e:
-        st.error(f"Error getting predictions: {e}")
+                try:
+                    x_row = df_ready[feature_cols].astype(float).values[-1:]
+                    probas = np.array([m.predict_proba(x_row)[0, 1] for m in models])
+                    p_mean = float(np.mean(probas))
+                    direction = "positive" if p_mean >= 0.5 else "negative"
+                    confidence = p_mean if direction == "positive" else (1.0 - p_mean)
+                    
+                    return {
+                        "direction": direction,
+                        "prob_positive": p_mean,
+                        "confidence": confidence,
+                        "n_models": len(models)
+                    }
+                except Exception:
+                    # Prediction failed, return None
+                    return None
+    except Exception:
+        # Silently fail and use live funding data only
+        pass
     return None
 
 @st.cache_data(ttl=60)
@@ -146,7 +157,8 @@ def fetch_api_data():
     live_funding = get_live_funding_data()
     live_predictions = get_live_predictions()
     
-    if live_funding or live_predictions:
+    # If we have any live data, use it
+    if live_funding:
         # Calculate next funding time (hourly on Hyperliquid)
         now = datetime.now(timezone.utc)
         next_hour = now.replace(minute=0, second=0, microsecond=0) + pd.Timedelta(hours=1)
@@ -155,23 +167,31 @@ def fetch_api_data():
         data = {
             "coin": "HYPE",
             "nextFundingTime": next_funding_ms,
-            "serverTime": int(now.timestamp() * 1000)
+            "serverTime": int(now.timestamp() * 1000),
+            "liveFunding": live_funding
         }
         
         if live_predictions:
             data["predictedDirection"] = live_predictions
         else:
+            # Use simple heuristic based on current funding rate
+            current_funding = live_funding.get("funding", 0)
+            if current_funding > 0:
+                direction = "positive"
+                prob = 0.6
+            elif current_funding < 0:
+                direction = "negative" 
+                prob = 0.4
+            else:
+                direction = "unknown"
+                prob = 0.5
+                
             data["predictedDirection"] = {
-                "direction": "unknown",
-                "prob_positive": 0.5,
-                "confidence": 0.5,
+                "direction": direction,
+                "prob_positive": prob,
+                "confidence": abs(prob - 0.5) + 0.5,
                 "n_models": 0
             }
-            
-        if live_funding:
-            data["liveFunding"] = live_funding
-        else:
-            data["liveFunding"] = {"funding": 0, "markPx": 0}
             
         # Mock accuracy for now
         data["accuracy"] = {"count": 0, "correct": 0, "accuracy": 0}
@@ -244,10 +264,14 @@ def main():
     # Fetch data
     data, is_mock = fetch_api_data()
     
+    has_ml_predictions = data.get("predictedDirection", {}).get("n_models", 0) > 0
+    
     if is_mock:
-        st.warning("🚧 Demo Mode: Using simulated data. Live ML models not available.")
+        st.warning("🚧 Demo Mode: Using simulated data")
+    elif has_ml_predictions:
+        st.success("🔴 LIVE: Real-time data + ML predictions")
     else:
-        st.success("🔴 LIVE: Real-time data from Hyperliquid")
+        st.info("🔴 LIVE: Real-time market data (ML models unavailable)")
     
     # Main prediction section
     col1, col2 = st.columns([2, 1])
@@ -257,6 +281,8 @@ def main():
         
         direction = data.get("predictedDirection", {}).get("direction", "unknown")
         probability = data.get("predictedDirection", {}).get("prob_positive", 0.5)
+        
+        n_models = data.get("predictedDirection", {}).get("n_models", 0)
         
         if direction == "positive":
             funding_text = "💰 SHORTS RECEIVE FUNDING"
@@ -269,7 +295,7 @@ def main():
         else:
             funding_text = "⏳ FUNDING DIRECTION UNCLEAR"
             funding_color = "#a0a0b0"
-            explanation = "Unable to predict funding direction"
+            explanation = "Based on current market conditions" if not is_mock else "Unable to predict funding direction"
         
         st.markdown("### 🔮 Funding Rate Prediction")
         st.markdown("**Who will receive the next funding payment?**")
@@ -280,7 +306,11 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown(f"**Confidence:** {format_percentage(probability)}")
+        confidence_text = format_percentage(probability)
+        if n_models > 0:
+            st.markdown(f"**ML Confidence:** {confidence_text} ({n_models} models)")
+        else:
+            st.markdown(f"**Confidence:** {confidence_text}")
         st.markdown(f"*{explanation}*")
         
         st.markdown('</div>', unsafe_allow_html=True)
