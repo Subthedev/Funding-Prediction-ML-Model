@@ -381,6 +381,83 @@ def main():
         <p><strong>Payment Time:</strong> Every hour on Hyperliquid</p>
     </div>
     """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
+        
+        # Confidence and details
+        st.markdown(f"**Confidence:** {format_percentage(probability)}")
+        st.markdown(f"*{explanation}*")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        # Live funding info
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.markdown("### ⏰ Next Funding")
+        
+        countdown = get_countdown_time(data.get("nextFundingTime", 0))
+        st.markdown(f"**Time Remaining:** `{countdown}`")
+        
+        current_funding = data.get("liveFunding", {}).get("funding", 0)
+        st.markdown(f"**Current Rate:** `{format_number(current_funding, 6)}`")
+        
+        mark_price = data.get("liveFunding", {}).get("markPx", 0)
+        st.markdown(f"**Mark Price:** `${format_number(mark_price, 2)}`")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Performance metrics
+    st.markdown("### 📊 Model Performance")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        accuracy = data.get("accuracy", {}).get("accuracy", 0)
+        st.metric("Accuracy", format_percentage(accuracy))
+    
+    with col2:
+        predictions_count = data.get("accuracy", {}).get("count", 0)
+        st.metric("Predictions Made", predictions_count)
+    
+    with col3:
+        correct_count = data.get("accuracy", {}).get("correct", 0)
+        st.metric("Correct Predictions", correct_count)
+    
+    # Chart section
+    st.markdown("### 📈 Funding Rate History")
+    
+    chart_data = generate_chart_data()
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=chart_data['timestamp'],
+        y=chart_data['funding_rate'],
+        mode='lines',
+        name='Funding Rate',
+        line=dict(color='#00ff9d', width=2)
+    ))
+    
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font_color='white',
+        xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+        height=400
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Funding explanation
+    st.markdown("""
+    <div class="funding-explanation">
+        <h4>💡 How Funding Rates Work</h4>
+        <p><strong>Positive Rate:</strong> Longs pay Shorts (bullish sentiment)</p>
+        <p><strong>Negative Rate:</strong> Shorts pay Longs (bearish sentiment)</p>
+        <p><strong>Payment Time:</strong> Every hour on Hyperliquid</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Auto-refresh
     time.sleep(1)
